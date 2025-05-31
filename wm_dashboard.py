@@ -1,47 +1,55 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-# Filter for selected LAs and use yearly group
+# Load your data
+df = pd.read_csv("your_data.csv")  # Replace with your dataset
 la_list = ['Birmingham', 'Coventry', 'Dudley', 'Sandwell', 'Solihull', 'Walsall', 'Wolverhampton']
 wm_df = df[df['Local Authority'].isin(la_list)]
-
 grouped = wm_df.groupby('Calendar Year').sum().reset_index()
 
-# Store original totals for reference
-original = grouped.copy()
+st.title("🌍 WM2041 Emissions Scenario Dashboard")
+st.markdown("Adjust sectoral reductions to explore emissions pathways against the WM2041 net-zero target.")
 
-# Clone to apply scenario
+# Sidebar: Sliders for sectoral reductions
+st.sidebar.header("📉 Reduction Assumptions")
+
+sectors = {
+    'Transport Total': '🚗 Transport',
+    'Industry Total': '🏭 Industry',
+    'Domestic Total': '🏠 Domestic',
+    'Commercial Total': '🏢 Commercial',
+    'Public Sector Total': '🏛 Public Sector',
+    'Agriculture Total': '🌾 Agriculture',
+    'Waste Total': '🗑 Waste'
+}
+
+reduction_settings = {}
+for key, label in sectors.items():
+    col1, col2 = st.sidebar.columns([2, 1])
+    with col1:
+        pct = st.slider(f"{label} Reduction %", 0, 100, 30 if "Transport" in key else 10, key=key)
+    with col2:
+        year = st.number_input(f"Start Year", min_value=2024, max_value=2040, value=2030, key=f"{key}_year")
+    reduction_settings[key] = (pct / 100, year)
+
+# Scenario Simulation
 scenario = grouped.copy()
 
-# Apply reductions (example reductions over time)
 for year in scenario['Calendar Year']:
     idx = scenario['Calendar Year'] == year
-    if year >= 2030:
-        scenario.loc[idx, 'Transport Total'] *= 0.6  # 40% reduction
-    if year >= 2035:
-        scenario.loc[idx, 'Industry Total'] *= 0.6
-    if year >= 2030:
-        scenario.loc[idx, 'Domestic Total'] *= 0.7
+    for sector, (reduction_pct, start_year) in reduction_settings.items():
+        if year >= start_year:
+            scenario.loc[idx, sector] *= (1 - reduction_pct)
 
-    # Recalculate Grand Total
-    scenario.loc[idx, 'Grand Total'] = (
-        scenario.loc[idx, 'Industry Total'].values +
-        scenario.loc[idx, 'Commercial Total'].values +
-        scenario.loc[idx, 'Public Sector Total'].values +
-        scenario.loc[idx, 'Domestic Total'].values +
-        scenario.loc[idx, 'Transport Total'].values +
-        scenario.loc[idx, 'Agriculture Total'].values +
-        scenario.loc[idx, 'Waste Total'].values
-    )
+    scenario.loc[idx, 'Grand Total'] = scenario.loc[idx, [
+        'Industry Total', 'Commercial Total', 'Public Sector Total',
+        'Domestic Total', 'Transport Total', 'Agriculture Total', 'Waste Total'
+    ]].sum(axis=1)
 
-# Plot original vs scenario
-plt.figure(figsize=(12, 6))
-plt.plot(original['Calendar Year'], original['Grand Total'], label='Original Emissions', linewidth=2)
-plt.plot(scenario['Calendar Year'], scenario['Grand Total'], label='Scenario Emissions', linewidth=2, linestyle='--')
-
-# Optional: add WM2041 Target line
-baseline_2016 = original[original['Calendar Year'] == 2016]['Grand Total'].values[0]
+# --- WM2041 Target Line ---
+baseline_2016 = grouped[grouped['Calendar Year'] == 2016]['Grand Total'].values[0]
 years = np.arange(2016, 2042)
 target_vals = []
 
@@ -52,12 +60,16 @@ for y in years:
     else:
         v = target_2026 * (1 - (y - 2026) / (2041 - 2026))
     target_vals.append(v)
-plt.plot(years, target_vals, 'k--', label='WM2041 Target')
 
-plt.title('Scenario Analysis: Emissions Reduction by Sector')
-plt.xlabel('Year')
-plt.ylabel('Total Emissions (kt CO2e)')
-plt.grid(True)
-plt.legend()
-plt.tight_layout()
-plt.show()
+# Plotting
+fig, ax = plt.subplots(figsize=(12, 6))
+ax.plot(grouped['Calendar Year'], grouped['Grand Total'], label='Original Emissions', linewidth=2)
+ax.plot(scenario['Calendar Year'], scenario['Grand Total'], label='Scenario Emissions', linestyle='--', linewidth=2)
+ax.plot(years, target_vals, 'k--', label='WM2041 Target')
+
+ax.set_title("Projected Emissions with Custom Reductions")
+ax.set_xlabel("Year")
+ax.set_ylabel("Total Emissions (kt CO2e)")
+ax.grid(True)
+ax.legend()
+st.pyplot(fig)
