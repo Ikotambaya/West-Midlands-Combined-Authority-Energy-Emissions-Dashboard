@@ -4,117 +4,162 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from prophet import Prophet
-import geopandas as gpd
-
-st.set_page_config(layout="wide", page_title="West Midlands Emissions Dashboard")
 
 # --- Load Data ---
 @st.cache_data
 def load_data():
     df = pd.read_excel("westmidlands.xlsx", sheet_name="WML")
-    df['Per Capita Emissions (tCO2e)'] = df["Grand Total"] / df["Population ('000s, mid-year estimate)"]
-    df['Emissions per km2 (kt CO2e)'] = df["Grand Total"] / df["Area (km²)"]
+    df["Per Capita Emissions (tCO2e)"] = df["Grand Total"] / df["Population ('000s, mid-year estimate)"]
+    df["Emissions per km2 (kt CO2e)"] = df["Grand Total"] / df["Area (km2)"]
     return df
 
 df = load_data()
-la_list = df['Local Authority'].unique().tolist()
+
+# --- Constants ---
+la_list = df["Local Authority"].unique().tolist()
+years = np.arange(2016, 2042)
+dates = pd.to_datetime(years.astype(str) + "-01-01")
 
 # --- Sidebar Controls ---
-st.sidebar.title("Controls")
-use_per_capita = st.sidebar.checkbox("Per Capita View", value=False)
-selected_la = st.sidebar.selectbox("Select Local Authority", la_list)
-scenario = st.sidebar.radio("Scenario", ["Business-as-Usual", "Accelerated"])
-reduction_slider = st.sidebar.slider("Reduction in Transport by 2030 (%)", 0, 100, 40)
+st.sidebar.title("🔧 Controls")
+use_per_capita = st.sidebar.checkbox("Per Capita Emissions", value=False)
+scenario = st.sidebar.selectbox("Emission Scenario", ["Business-as-Usual", "Accelerated"])
+selected_vis = st.sidebar.multiselect("Select visualizations", [
+    "Forecast vs Target",
+    "Total Emissions Trend",
+    "Per Capita Emissions",
+    "Emissions per km²",
+    "Average Emissions Heatmap",
+    "Sectoral Emissions"
+], default=["Forecast vs Target"])
 
-# --- Main Title ---
-st.title("🌍 West Midlands Emissions Forecast & Trends Dashboard")
+# --- Title ---
+st.title("🌍 West Midlands Emissions Intelligence Dashboard")
 
-# --- Forecasting ---
+metric = "Grand Total"
+metric_label = "Emissions (kt CO2e)"
+if use_per_capita:
+    metric = "Per Capita Emissions (tCO2e)"
+    metric_label = "Emissions (tCO2e per person)"
+
+# --- Forecast Function ---
 @st.cache_data
 def forecast_la(la, metric):
     la_df = df[df["Local Authority"] == la]
-    prophet_df = pd.DataFrame({
-        "ds": pd.to_datetime(la_df["Calendar Year"].astype(str) + "-01-01"),
-        "y": la_df[metric]
-    })
+    prophet_df = pd.DataFrame()
+    prophet_df["ds"] = pd.to_datetime(la_df["Calendar Year"].astype(str) + "-01-01")
+    prophet_df["y"] = la_df[metric]
+
     model = Prophet(yearly_seasonality=False)
     model.fit(prophet_df)
-    future = model.make_future_dataframe(periods=18, freq="Y")
+
+    future = model.make_future_dataframe(periods=2041 - prophet_df["ds"].dt.year.max(), freq="Y")
     forecast = model.predict(future)
-    return forecast[["ds", "yhat"]].rename(columns={"yhat": "Forecast"})
 
-metric = "Per Capita Emissions (tCO2e)" if use_per_capita else "Grand Total"
-forecast = forecast_la(selected_la, metric)
+    return forecast[["ds", "yhat"]].rename(columns={"yhat": la})
 
-st.subheader(f"📈 Emissions Forecast: {selected_la}")
-fig1, ax1 = plt.subplots(figsize=(10, 4))
-la_df = df[df["Local Authority"] == selected_la]
-ax1.plot(pd.to_datetime(la_df["Calendar Year"].astype(str) + "-01-01"), la_df[metric], label="Historical", marker='o')
-ax1.plot(forecast["ds"], forecast["Forecast"], label="Forecast", linestyle='--')
-ax1.set_title("Forecast vs Historical")
-ax1.set_ylabel(metric)
-ax1.legend()
-st.pyplot(fig1)
+# --- Forecasting All LAs ---
+if "Forecast vs Target" in selected_vis:
+    st.header("📈 Forecast vs WM2041 Target")
 
-# --- Time Series Trends ---
-st.subheader("📊 Emissions Trends by Local Authority")
-fig2, ax2 = plt.subplots(figsize=(12, 5))
-sns.lineplot(data=df, x="Calendar Year", y="Grand Total", hue="Local Authority", marker="o", ax=ax2)
-ax2.set_title("Total Emissions by Local Authority")
-ax2.set_ylabel("kt CO2e")
-st.pyplot(fig2)
+    forecast_df = pd.DataFrame({"ds": pd.date_range(start="2005", end="2042", freq="Y")})
+    for la in la_list:
+        try:
+            forecast = forecast_la(la, metric)
+            forecast_df = forecast_df.merge(forecast, on="ds", how="left")
+        except Exception as e:
+            st.warning(f"Forecast failed for {la}: {e}")
 
-# --- Per Capita Trend ---
-st.subheader("👤 Per Capita Emissions by Local Authority")
-fig3, ax3 = plt.subplots(figsize=(12, 5))
-sns.lineplot(data=df, x="Calendar Year", y="Per Capita Emissions (tCO2e)", hue="Local Authority", ax=ax3)
-ax3.set_title("Per Capita Emissions (tCO2e)")
-st.pyplot(fig3)
+    forecast_df["Total Forecast"] = forecast_df[la_list].sum(axis=1)
 
-# --- Emissions per km2 ---
-st.subheader("🗺️ Emissions Intensity (kt CO2e / km²)")
-fig4, ax4 = plt.subplots(figsize=(12, 5))
-sns.lineplot(data=df, x="Calendar Year", y="Emissions per km2 (kt CO2e)", hue="Local Authority", ax=ax4)
-ax4.set_title("Emissions per km²")
-st.pyplot(fig4)
+    # --- WM2041 Target ---
+    baseline_val = df[(df["Calendar Year"] == 2016) & (df["Local Authority"].isin(la_list))][metric].sum()
+    target_vals = []
+    for year in years:
+        if year <= 2026:
+            target = baseline_val - (baseline_val * 0.33 * (year - 2016) / 10)
+        else:
+            target = (baseline_val * 0.67) * (1 - (year - 2026) / 15)
+        if scenario == "Business-as-Usual":
+            target = baseline_val
+        target_vals.append(target)
 
-# --- Sectoral Breakdown (2022) ---
-st.subheader("🏭 Sectoral Emissions by Local Authority (2022)")
-sector_cols = ['Industry Total', 'Transport Total', 'Domestic Total',
-               'Commercial Total', 'Public Sector Total', 'Agriculture Total', 
-               'Waste Total', 'LULUCF Net Emissions']
-df_2022 = df[df["Calendar Year"] == 2022]
-df_melted = df_2022.melt(id_vars="Local Authority", value_vars=sector_cols, var_name="Sector", value_name="Emissions")
-fig5, ax5 = plt.subplots(figsize=(14, 6))
-sns.barplot(data=df_melted, x="Local Authority", y="Emissions", hue="Sector", ax=ax5)
-ax5.set_title("Sectoral Emissions by LA (2022)")
-ax5.set_xticklabels(ax5.get_xticklabels(), rotation=45)
-st.pyplot(fig5)
+    target_df = pd.DataFrame({"ds": dates, "WM2041 Target": target_vals})
+    merged_df = pd.merge(forecast_df, target_df, on="ds", how="left")
 
-# --- Choropleth ---
-st.subheader("🗺️ Average Emissions per km² (Heatmap)")
-@st.cache_data
-def load_geo():
-    return gpd.read_file("westmidlands_shapefile.geojson")
+    # --- Plot Forecast vs Target ---
+    fig, ax = plt.subplots(figsize=(14, 6))
+    ax.plot(merged_df["ds"], merged_df["Total Forecast"], label="Forecasted Total", linewidth=2)
+    ax.plot(merged_df["ds"], merged_df["WM2041 Target"], "k--", label=f"{scenario} Target", linewidth=2)
+    ax.fill_between(merged_df["ds"],
+                    merged_df["Total Forecast"],
+                    merged_df["WM2041 Target"],
+                    color="red", alpha=0.1, label="Gap")
+    ax.set_title("Emissions Forecast vs. WM2041 Target")
+    ax.set_ylabel(metric_label)
+    ax.set_xlabel("Year")
+    ax.legend()
+    ax.grid(True)
+    st.pyplot(fig)
 
-gdf = load_geo()
-avg_emissions = df.groupby("Local Authority")["Emissions per km2 (kt CO2e)"].mean().reset_index()
-merged = gdf.merge(avg_emissions, left_on="LA_Name", right_on="Local Authority", how="left")
+# --- Emissions Trend Line Plot ---
+if "Total Emissions Trend" in selected_vis:
+    st.header("📊 Emissions Trend by Local Authority")
+    plt.figure(figsize=(12, 6))
+    sns.lineplot(data=df, x='Calendar Year', y='Grand Total', hue='Local Authority', marker='o')
+    plt.title('Total Emissions by Local Authority (2005–2022)')
+    plt.ylabel("kt CO2e")
+    plt.grid(True)
+    plt.tight_layout()
+    st.pyplot(plt)
 
-fig6, ax6 = plt.subplots(1, 1, figsize=(8, 8))
-merged.plot(column="Emissions per km2 (kt CO2e)", cmap="Reds", linewidth=0.8, ax=ax6, edgecolor='0.8', legend=True)
-ax6.set_title("Average Emissions per km² by LA")
-ax6.axis("off")
-st.pyplot(fig6)
+# --- Per Capita Emissions Trend ---
+if "Per Capita Emissions" in selected_vis:
+    st.header("👥 Per Capita Emissions by Local Authority")
+    plt.figure(figsize=(12, 6))
+    sns.lineplot(data=df, x='Calendar Year', y='Per Capita Emissions (tCO2e)', hue='Local Authority')
+    plt.title('Per Capita Emissions (2005–2022)')
+    plt.ylabel('tCO2e per person')
+    plt.grid(True)
+    plt.tight_layout()
+    st.pyplot(plt)
 
-# --- Scenario Analysis ---
-st.subheader("🔄 Scenario Impact Calculator")
-base_2022 = df_2022[df_2022["Local Authority"].isin(la_list)]["Grand Total"].sum()
-transport_2022 = df_2022["Transport Total"].sum()
-reduction_amount = transport_2022 * (reduction_slider / 100)
-new_total = base_2022 - reduction_amount
+# --- Emissions per km² ---
+if "Emissions per km²" in selected_vis:
+    st.header("📏 Emissions per km² by Local Authority")
+    plt.figure(figsize=(12, 6))
+    sns.lineplot(data=df, x='Calendar Year', y='Emissions per km2 (kt CO2e)', hue='Local Authority')
+    plt.title('Emissions per km² (2005–2022)')
+    plt.ylabel('kt CO2e per km²')
+    plt.grid(True)
+    plt.tight_layout()
+    st.pyplot(plt)
 
-st.metric("2022 Total Emissions (kt CO2e)", f"{base_2022:,.0f}")
-st.metric("Scenario-Adjusted Emissions (kt CO2e)", f"{new_total:,.0f}", delta=f"{-reduction_amount:,.0f}")
+# --- Heatmap of Average Emissions per km² ---
+if "Average Emissions Heatmap" in selected_vis:
+    st.header("🌡️ Average Emissions per km² (2005–2022)")
+    pivot = df.pivot_table(index='Local Authority', values='Emissions per km2 (kt CO2e)', aggfunc='mean')
+    fig, ax = plt.subplots(figsize=(8, 4))
+    sns.heatmap(pivot, annot=True, cmap='Reds', ax=ax)
+    ax.set_title('Average Emissions per km² by LA')
+    st.pyplot(fig)
 
-st.success("📢 Dashboard completed – ready for deployment or report integration.")
+# --- Sectoral Emissions Barplot ---
+if "Sectoral Emissions" in selected_vis:
+    st.header("🏭 Sectoral Emissions by Local Authority (2022)")
+    sector_cols = [
+        'Industry Total', 'Transport Total', 'Domestic Total',
+        'Commercial Total', 'Public Sector Total', 'Agriculture Total',
+        'Waste Total', 'LULUCF Net Emissions'
+    ]
+    df_sector = df[df["Calendar Year"] == 2022][["Local Authority"] + sector_cols]
+    df_melted = df_sector.melt(id_vars="Local Authority", var_name="Sector", value_name="Emissions")
+    plt.figure(figsize=(14, 6))
+    sns.barplot(data=df_melted, x='Local Authority', y='Emissions', hue='Sector')
+    plt.title("Sectoral Emissions Breakdown (2022)")
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    st.pyplot(plt)
+
+# --- Footer ---
+st.caption("Built for West Midlands Net Zero Strategy — Research Analyst Dashboard")
