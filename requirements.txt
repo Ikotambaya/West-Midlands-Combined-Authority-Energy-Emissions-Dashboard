@@ -10,3 +10,5 @@ xgboost
 shap
 folium
 geopandas
+streamlit-folium
+branca
