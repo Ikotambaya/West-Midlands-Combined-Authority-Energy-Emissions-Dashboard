@@ -15,7 +15,7 @@ df = load_data()
 # --- Constants ---
 la_list = ['Birmingham', 'Coventry', 'Dudley', 'Sandwell', 'Solihull', 'Walsall', 'Wolverhampton']
 years = np.arange(2016, 2042)
-dates = pd.to_datetime(years.astype(str) + "-01-01")
+dates = pd.to_datetime([f"{y}-01-01" for y in years])
 
 # --- Sidebar ---
 st.sidebar.title("Controls")
@@ -42,13 +42,17 @@ def forecast_la(la, metric):
     model = Prophet(yearly_seasonality=False)
     model.fit(prophet_df)
 
-    future = model.make_future_dataframe(periods=2041 - prophet_df["ds"].dt.year.max(), freq="Y")
-    forecast = model.predict(future)
+    forecast_horizon = 2041 - prophet_df["ds"].dt.year.max()
+    if forecast_horizon > 0:
+        future = model.make_future_dataframe(periods=forecast_horizon, freq="Y")
+    else:
+        future = prophet_df[["ds"]]
 
+    forecast = model.predict(future)
     return forecast[["ds", "yhat"]].rename(columns={"yhat": la})
 
 # --- Forecast All LAs ---
-forecast_df = pd.DataFrame({"ds": pd.date_range(start="2005", end="2042", freq="Y")})
+forecast_df = pd.DataFrame({"ds": pd.to_datetime([f"{y}-01-01" for y in range(2005, 2042)])})
 
 for la in la_list:
     try:
@@ -67,29 +71,22 @@ target_vals = []
 for year in years:
     if scenario == "Business-as-Usual":
         target = baseline_val
+    elif year <= 2026:
+        target = baseline_val - (baseline_val * 0.33 * (year - 2016) / 10)
     else:
-        if year <= 2026:
-            target = baseline_val - (baseline_val * 0.33 * (year - 2016) / 10)
-        else:
-            target = (baseline_val * 0.67) * (1 - (year - 2026) / 15)
+        target = (baseline_val * 0.67) * (1 - (year - 2026) / 15)
     target_vals.append(target)
 
 target_df = pd.DataFrame({"ds": dates, "WM2041 Target": target_vals})
 
-# --- Merge Forecast and Target for Aligned Plotting ---
-merged_df = pd.merge(forecast_df[["ds", "Total Forecast"]], target_df, on="ds", how="inner")
-
 # --- Plotting ---
 fig, ax = plt.subplots(figsize=(14, 7))
-ax.plot(merged_df["ds"], merged_df["Total Forecast"], label="Forecasted Total", linewidth=2)
-ax.plot(merged_df["ds"], merged_df["WM2041 Target"], "k--", label=f"{scenario} Target", linewidth=2)
+ax.plot(forecast_df["ds"], forecast_df["Total Forecast"], label="Forecasted Total", linewidth=2)
+ax.plot(target_df["ds"], target_df["WM2041 Target"], "k--", label=f"{scenario} Target", linewidth=2)
 
-# Fill gap where forecast exceeds target
-ax.fill_between(merged_df["ds"], 
-                merged_df["Total Forecast"], 
-                merged_df["WM2041 Target"], 
-                where=merged_df["Total Forecast"] > merged_df["WM2041 Target"],
-                color="red", alpha=0.1, label="Gap")
+# Align and fill gap only for overlapping years
+merged = pd.merge(forecast_df[["ds", "Total Forecast"]], target_df, on="ds", how="inner")
+ax.fill_between(merged["ds"], merged["Total Forecast"], merged["WM2041 Target"], color="red", alpha=0.1, label="Gap")
 
 ax.set_title("Emissions Forecast vs. WM2041 Target")
 ax.set_ylabel(metric_label)
@@ -100,12 +97,21 @@ ax.grid(True)
 st.pyplot(fig)
 
 # --- Summary Metrics ---
-latest_year = merged_df["ds"].dt.year.max()
-latest_forecast = merged_df.loc[merged_df["ds"].dt.year == latest_year, "Total Forecast"].values[0]
-target_2041 = merged_df.loc[merged_df["ds"].dt.year == 2041, "WM2041 Target"].values[0]
-gap = latest_forecast - target_2041
-
 st.subheader("📊 Summary")
-st.metric("Latest Forecast (2041)", f"{latest_forecast:,.1f}")
-st.metric("WM2041 Target", f"{target_2041:,.1f}")
-st.metric("Forecast Overshoot", f"{gap:,.1f}", delta_color="inverse")
+
+if not merged.empty:
+    latest_year = merged["ds"].dt.year.max()
+    latest_data = merged[merged["ds"].dt.year == latest_year]
+
+    if not latest_data.empty:
+        latest_forecast = latest_data["Total Forecast"].values[0]
+        target_2041 = latest_data["WM2041 Target"].values[0]
+        gap = latest_forecast - target_2041
+
+        st.metric("Latest Forecast (2041)", f"{latest_forecast:,.1f}")
+        st.metric("WM2041 Target", f"{target_2041:,.1f}")
+        st.metric("Forecast Overshoot", f"{gap:,.1f}", delta_color="inverse")
+    else:
+        st.warning(f"No data found for 2041.")
+else:
+    st.warning("No data available for gap analysis.")
