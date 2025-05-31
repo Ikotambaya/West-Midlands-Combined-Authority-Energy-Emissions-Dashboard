@@ -65,21 +65,31 @@ baseline_val = df[(df["Calendar Year"] == baseline_year) & (df["Local Authority"
 target_vals = []
 
 for year in years:
-    if year <= 2026:
-        target = baseline_val - (baseline_val * 0.33 * (year - 2016) / 10)
-    else:
-        target = (baseline_val * 0.67) * (1 - (year - 2026) / 15)
     if scenario == "Business-as-Usual":
-        target = baseline_val  # No reduction
+        target = baseline_val
+    else:
+        if year <= 2026:
+            target = baseline_val - (baseline_val * 0.33 * (year - 2016) / 10)
+        else:
+            target = (baseline_val * 0.67) * (1 - (year - 2026) / 15)
     target_vals.append(target)
 
 target_df = pd.DataFrame({"ds": dates, "WM2041 Target": target_vals})
 
+# --- Merge Forecast and Target for Aligned Plotting ---
+merged_df = pd.merge(forecast_df[["ds", "Total Forecast"]], target_df, on="ds", how="inner")
+
 # --- Plotting ---
 fig, ax = plt.subplots(figsize=(14, 7))
-ax.plot(forecast_df["ds"], forecast_df["Total Forecast"], label="Forecasted Total", linewidth=2)
-ax.plot(target_df["ds"], target_df["WM2041 Target"], "k--", label=f"{scenario} Target", linewidth=2)
-ax.fill_between(target_df["ds"], forecast_df["Total Forecast"], target_df["WM2041 Target"], color="red", alpha=0.1, label="Gap")
+ax.plot(merged_df["ds"], merged_df["Total Forecast"], label="Forecasted Total", linewidth=2)
+ax.plot(merged_df["ds"], merged_df["WM2041 Target"], "k--", label=f"{scenario} Target", linewidth=2)
+
+# Fill gap where forecast exceeds target
+ax.fill_between(merged_df["ds"], 
+                merged_df["Total Forecast"], 
+                merged_df["WM2041 Target"], 
+                where=merged_df["Total Forecast"] > merged_df["WM2041 Target"],
+                color="red", alpha=0.1, label="Gap")
 
 ax.set_title("Emissions Forecast vs. WM2041 Target")
 ax.set_ylabel(metric_label)
@@ -90,9 +100,9 @@ ax.grid(True)
 st.pyplot(fig)
 
 # --- Summary Metrics ---
-latest_year = forecast_df["ds"].dt.year.max()
-latest_forecast = forecast_df.loc[forecast_df["ds"].dt.year == latest_year, "Total Forecast"].values[0]
-target_2041 = target_df.loc[target_df["ds"].dt.year == 2041, "WM2041 Target"].values[0]
+latest_year = merged_df["ds"].dt.year.max()
+latest_forecast = merged_df.loc[merged_df["ds"].dt.year == latest_year, "Total Forecast"].values[0]
+target_2041 = merged_df.loc[merged_df["ds"].dt.year == 2041, "WM2041 Target"].values[0]
 gap = latest_forecast - target_2041
 
 st.subheader("📊 Summary")
