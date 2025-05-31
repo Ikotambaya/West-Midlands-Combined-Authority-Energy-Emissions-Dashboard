@@ -44,21 +44,25 @@ df = load_data()
 # --- Constants ---
 la_list = df["Local Authority"].unique().tolist()
 years = np.arange(2016, 2042)
-dates = pd.to_datetime(years.astype(str) + "-01-01")  # Fixed the missing parenthesis here
+dates = pd.to_datetime(years.astype(str) + "-01-01")
 
 # --- Sidebar Controls ---
 st.sidebar.title("🔧 Controls")
 use_per_capita = st.sidebar.checkbox("Per Capita Emissions", value=False)
 scenario = st.sidebar.selectbox("Emission Scenario", ["Business-as-Usual", "Accelerated"])
-selected_vis = st.sidebar.multiselect("Select visualizations", [
-    "Forecast vs Target",
-    "Total Emissions Trend",
-    "Per Capita Emissions",
-    "Emissions per km²",
-    "Average Emissions Heatmap",
-    "Sectoral Emissions",
-    "Interactive Map"  # Added the new map visualization option
-], default=["Forecast vs Target", "Interactive Map"])
+selected_vis = st.sidebar.multiselect(
+    "Select visualizations", 
+    [
+        "Forecast vs Target",
+        "Total Emissions Trend",
+        "Per Capita Emissions",
+        "Emissions per km²",
+        "Average Emissions Heatmap",
+        "Sectoral Emissions",
+        "Interactive Map"
+    ],
+    default=["Forecast vs Target", "Interactive Map"]
+)
 
 # --- Title ---
 st.title("🌍 West Midlands Emissions Intelligence Dashboard")
@@ -92,7 +96,8 @@ if "Interactive Map" in selected_vis:
     # Prepare data for the map
     map_year = st.sidebar.selectbox(
         "Select year for map",
-        sorted(df["Calendar Year"].unique(), reverse=True)
+        sorted(df["Calendar Year"].unique(), reverse=True
+    )
     
     map_df = df[df["Calendar Year"] == map_year].groupby("Local Authority").agg({
         "Grand Total": "sum",
@@ -145,7 +150,51 @@ if "Interactive Map" in selected_vis:
     # Display the map
     folium_static(m, width=1000, height=600)
 
-# [Rest of your existing visualizations...]
+# --- Forecasting All LAs ---
+if "Forecast vs Target" in selected_vis:
+    st.header("📈 Forecast vs WM2041 Target")
+
+    forecast_df = pd.DataFrame({"ds": pd.date_range(start="2005", end="2042", freq="Y")})
+    for la in la_list:
+        try:
+            forecast = forecast_la(la, metric)
+            forecast_df = forecast_df.merge(forecast, on="ds", how="left")
+        except Exception as e:
+            st.warning(f"Forecast failed for {la}: {e}")
+
+    forecast_df["Total Forecast"] = forecast_df[la_list].sum(axis=1)
+
+    # --- WM2041 Target ---
+    baseline_val = df[(df["Calendar Year"] == 2016) & (df["Local Authority"].isin(la_list))][metric].sum()
+    target_vals = []
+    for year in years:
+        if year <= 2026:
+            target = baseline_val - (baseline_val * 0.33 * (year - 2016) / 10)
+        else:
+            target = (baseline_val * 0.67) * (1 - (year - 2026) / 15)
+        if scenario == "Business-as-Usual":
+            target = baseline_val
+        target_vals.append(target)
+
+    target_df = pd.DataFrame({"ds": dates, "WM2041 Target": target_vals})
+    merged_df = pd.merge(forecast_df, target_df, on="ds", how="left")
+
+    # --- Plot Forecast vs Target ---
+    fig, ax = plt.subplots(figsize=(14, 6))
+    ax.plot(merged_df["ds"], merged_df["Total Forecast"], label="Forecasted Total", linewidth=2)
+    ax.plot(merged_df["ds"], merged_df["WM2041 Target"], "k--", label=f"{scenario} Target", linewidth=2)
+    ax.fill_between(merged_df["ds"],
+                    merged_df["Total Forecast"],
+                    merged_df["WM2041 Target"],
+                    color="red", alpha=0.1, label="Gap")
+    ax.set_title("Emissions Forecast vs. WM2041 Target")
+    ax.set_ylabel(metric_label)
+    ax.set_xlabel("Year")
+    ax.legend()
+    ax.grid(True)
+    st.pyplot(fig)
+
+# [Include your other visualizations here...]
 
 # --- Footer ---
 st.markdown("---")
